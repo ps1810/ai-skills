@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.go) mkdir -p \"${CLAUDE_PROJECT_DIR:-.}/.claude\" && touch \"${CLAUDE_PROJECT_DIR:-.}/.claude/.go-touched\" ;; esac; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "You are gating the end of a coding turn in a Go project. The JSON at the end of this prompt is the Stop hook input; it has `cwd`, `transcript_path`, and `stop_hook_active`.\n\n## Decide whether to review at all\n\nReturn {\"ok\": true} immediately, doing nothing else, if ANY of these hold:\n- `<cwd>/.claude/.go-touched` does not exist (Claude did not write a .go file this turn).\n- There is no `go.mod` in cwd or any parent directory.\n- `git status --porcelain` fails or reports no changes to .go files.\n\n## Review\n\nOtherwise:\n1. Run `gofmt -l .`, `go vet ./...`, and `go build ./...`.\n2. Read `${CLAUDE_PLUGIN_ROOT}/skills/go-review/SKILL.md` for the severity scale and output format, and `${CLAUDE_PLUGIN_ROOT}/skills/go-review/references/concurrency.md` and `${CLAUDE_PLUGIN_ROOT}/skills/go-review/references/idiomatic.md` for the checklists.\n3. Read each changed .go file in full (`git diff --name-only` plus `git diff --cached --name-only`, plus untracked .go files from `git status --porcelain`), not only the hunks.\n4. Focus on: data races and goroutine leaks, unchecked errors and swallowed error context, interfaces defined on the producer side, missing context propagation, and nil-map or nil-pointer paths.\n\nClassify each finding BLOCKING, WARNING, or NIT using the skill's definitions. Only BLOCKING findings gate the turn.\n\n## Do not block twice on the same finding\n\nYou have no memory between invocations. If `stop_hook_active` is true, a previous invocation of this hook already blocked this turn. Before blocking again, grep `transcript_path` for the previous hook's `reason` text and for Claude's response to it. A BLOCKING finding that was already reported, and that Claude either fixed or explicitly chose to leave with a stated reason, is now a WARNING and must not block again. Only new BLOCKING findings block on a second pass.\n\n## Return\n\n- At least one BLOCKING finding to report: return {\"ok\": false, \"reason\": \"<numbered BLOCKING findings, each with file:line, the concrete failure mode, and the specific fix>\"}. Leave `.claude/.go-touched` in place so the next pass reviews the fix.\n- Otherwise: run `rm -f <cwd>/.claude/.go-touched` and return {\"ok\": true}, even if there are warnings and nits.\n\n$ARGUMENTS",
+            "timeout": 240
+          }
+        ]
+      }
+    ]
+  }
+}

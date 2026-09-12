@@ -1,0 +1,7 @@
+{
+  "name": "architect-council",
+  "version": "0.1.0",
+  "description": "Architect-level design skills for feature and product planning",
+  "author": { "name": "CHANGE-ME", "email": "you@example.com" },
+  "keywords": ["architecture", "security", "caching", "database", "infrastructure", "backend"]
+}

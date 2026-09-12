@@ -1,0 +1,7 @@
+{
+  "name": "go-review",
+  "version": "0.1.0",
+  "description": "Automatic Go code review after Claude finishes writing code",
+  "author": { "name": "CHANGE-ME", "email": "you@example.com" },
+  "keywords": ["go", "golang", "review", "concurrency", "solid"]
+}

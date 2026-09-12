@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "eng-skills",
+  "owner": {
+    "name": "CHANGE-ME",
+    "email": "you@example.com"
+  },
+  "metadata": {
+    "description": "Go review pipeline and architect-level design skills",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "go-review",
+      "source": "./plugins/go-review",
+      "description": "Automatic Sonnet-backed Go code review after Claude writes code: idiomatic Go, SOLID, concurrency and race safety, design patterns.",
+      "version": "0.1.0",
+      "category": "review",
+      "tags": ["go", "golang", "code-review", "concurrency"]
+    },
+    {
+      "name": "architect-council",
+      "source": "./plugins/architect-council",
+      "description": "Architect-level design skills for feature and product planning: security and compliance, caching, database, infrastructure, backend services.",
+      "version": "0.1.0",
+      "category": "architecture",
+      "tags": ["architecture", "design-review", "planning"]
+    }
+  ]
+}
