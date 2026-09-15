@@ -69,6 +69,41 @@ Every synchronous call to another service needs: a timeout shorter than the call
 
 **For events**, the same discipline: a schema registry or at minimum a documented, versioned schema; an event ID for deduplication; a timestamp; enough payload that consumers do not need a synchronous callback to be useful. And decide deliberately between event-carried state (self-contained, larger, can be stale) and event-as-notification (small, forces a callback, always fresh) — the second reintroduces the coupling the event was meant to remove.
 
+**Contract tests** are how an API or event contract stays true after the review. For every contract another team or service consumes: a consumer-driven contract test (Pact, or a hand-rolled fixture the consumer owns and the provider runs in CI), or at minimum schema validation of the provider's responses against the published OpenAPI or event schema in the provider's own test suite. A contract with no test is a contract until the next refactor.
+
+## Long-running operations
+
+Anything that can take longer than a few seconds — report generation, bulk import, an export, a payment capture that waits on a bank — does not belong behind a synchronous request. The client's timeout, the load balancer's idle timeout, and the service's own timeout all sit between the caller and the result, and one of them will fire.
+
+The pattern:
+
+1. `POST /exports` validates the request, creates a job record, enqueues the work, and returns `202 Accepted` with a `Location: /exports/{id}` header and the job resource in the body.
+2. `GET /exports/{id}` returns the job's state (`queued`, `running` with progress, `done` with a result link, `failed` with a structured error). Polling with `Retry-After` is fine; a webhook or SSE stream is better for clients that need it.
+3. The job resource is durable, idempotent to re-request, and has a retention policy.
+
+Review findings: a synchronous endpoint with a timeout raised to accommodate slow work; a job with no way to observe its state; a "fire and forget" with no job record, so a lost message is a silently missing export.
+
+## Rate limiting and quotas
+
+Limits are a service-design decision, not only an ingress feature. The gateway limit protects the platform; per-client limits protect tenants from each other and protect the business model.
+
+- **Per-client (tenant, API key, user) limits on every public endpoint**, enforced in the service or a shared limiter keyed on the authenticated identity, never on a header the client controls.
+- **Distinguish rate (requests per second) from quota (requests or resources per billing period).** They have different storage (a sliding window in Redis vs. a counter that survives restarts), different responses (`429` with `Retry-After` vs. a plan-limit error), and different owners.
+- **Expensive operations get their own limits.** A search endpoint and a health endpoint should not share a budget; one slow query type can consume a tenant's whole allowance.
+- **Return the limit state in headers** (`RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` or the `X-` variants) so clients can back off before hitting the wall.
+- **Limits are observable and configurable per tenant** without a deploy; the first enterprise customer will need a different number.
+
+## Outbound webhooks
+
+If the service calls webhooks that customers configure, the receiver is a dependency you do not control, and every property of a flaky dependency applies.
+
+- **Deliver asynchronously from a queue**, never inline in the request that triggered the event.
+- **Sign every payload** (HMAC over the body with a per-endpoint secret, timestamp in the signed data) so receivers can verify it; document the verification.
+- **Retry with backoff and a cap**, then dead-letter with visibility: the customer needs to see that deliveries failed and be able to replay them. A silently dropped webhook is a support ticket a week later.
+- **Timeouts short and strict** (a few seconds); a slow receiver must not hold a worker.
+- **Ordering is not guaranteed** once retries exist; put an event ID and a sequence or timestamp in the payload and document that receivers must tolerate out-of-order and duplicate delivery.
+- **Egress to customer-controlled URLs is an SSRF vector.** Resolve and validate the destination (no private ranges, no metadata endpoints), and send from an egress with no access to internal networks.
+
 ## Distributed transactions
 
 If the design has an operation spanning two services or two datastores, address this explicitly. It is the most common source of correctness bugs in service architectures.
@@ -126,16 +161,26 @@ what partial failure looks like, and who reconciles it.>
 ## Background work
 | Job | Trigger | Idempotent? | Retry/DLQ | Owner |
 
+## Limits
+| Endpoint or operation | Rate limit | Quota | Keyed on |
+
 ## BLOCKING / WARNING / CONSIDER
 
 ## What we are not building yet
 <And the signal that says it is time.>
 ```
 
+When invoked by `design-review`, return only the BLOCKING / WARNING / CONSIDER findings plus the boundaries and communication tables; the coordinator assembles the document.
+
 ## Calibration
 
-Reserve BLOCKING for: a boundary that splits an operation that must be atomic, a cross-service write with no defined partial-failure behaviour, missing idempotency on a retryable write, an unpaginated list endpoint, no timeout on an outbound call, and a dead-letter queue with no owner.
+Severity levels are defined once in `design-review`. In this domain, reserve BLOCKING for: a boundary that splits an operation that must be atomic, a cross-service write with no defined partial-failure behaviour, missing idempotency on a retryable write, an unpaginated list endpoint, no timeout on an outbound call, a synchronous endpoint for work that can exceed the client timeout, a public endpoint with no per-client limit, an outbound webhook sender that can reach internal addresses, and a dead-letter queue with no owner.
 
 Two findings worth checking on every review because they are almost always absent: **what the system does when each dependency is unavailable**, and **who reconciles a partial failure across a boundary**.
+
+| Not a finding | A finding |
+|---|---|
+| "Consider making the export asynchronous." | "`POST /reports/export` builds the CSV inline; at the stated 2M-row tenants that is 40–90 s, past the ALB's 60 s idle timeout, so the client gets a 504 while the server keeps working. Return 202 with a job resource and generate in the worker." |
+| "Ensure proper error handling between services." | "Order service writes the order, then calls inventory; if inventory times out the order row exists with no reservation and nothing reconciles it. Use an outbox: write order + `reserve` event in one transaction, let the worker call inventory with retries, and mark the order `failed` after N attempts." |
 
 The most valuable recommendation you can make here is often **"do not split this yet."** A modular monolith with enforced internal boundaries preserves the option to split later at a fraction of the cost, and the boundary you would draw today — before the feature has been built and the access patterns are known — is probably the wrong one.

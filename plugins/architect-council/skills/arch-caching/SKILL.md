@@ -27,10 +27,13 @@ Each layer has a different invalidation story. Getting the layer wrong is more e
 |---|---|---|---|
 | Client / browser | 0 | Effectively impossible before expiry | Immutable, content-hashed assets |
 | CDN / edge | 10-50 ms | Purge API, seconds to minutes to propagate | Static assets, public API responses, images |
+| Request-scoped (per-request map, dataloader) | ns | None needed; dies with the request | The same entity loaded N times while serving one request; N+1 across resolvers or nested handlers |
 | In-process (bounded LRU) | ns | Per-instance, no coordination | Config, feature flags, hot reference data, tiny working sets |
 | Distributed (Redis/Valkey/Memcached) | 0.5-2 ms | Coordinated, immediate | Session data, computed results, shared hot data |
 | Materialized read model | Query cost | Rebuilt on write or on schedule | Complex aggregations, denormalized reads |
 | Database buffer pool | Already there | Automatic | Free; tune it before adding a cache layer |
+
+**Request-scoped memoization is the cache with no invalidation problem**, because nothing outlives the request. It is the correct first answer to N+1 in GraphQL resolvers, nested service calls, and any handler that loads the same user or tenant row from three places. A dataloader that batches and dedupes within one request often removes the need for the distributed cache the design was about to add. Check for it before anything below.
 
 **In-process caches are per-instance.** With twenty replicas you have twenty independently stale copies and no way to invalidate them synchronously. That is fine for feature flags with a 30-second TTL and wrong for anything a user expects to see change immediately after their own write.
 
@@ -82,6 +85,18 @@ Review question: **for every cached entity, name what invalidates it and what ha
 
 **CDN** (CloudFront, Fastly, Cloudflare) — anything cacheable by URL. Also handles TLS termination and DDoS absorption. Getting `Cache-Control`, `Vary`, and `Surrogate-Key` right matters more than the vendor choice. A `Vary: Cookie` on an otherwise cacheable response drops the hit rate to near zero.
 
+**Eviction policy** is a design decision the defaults hide. Redis defaults to `noeviction` (writes fail at `maxmemory`), managed offerings often default to `volatile-lru` (only keys with a TTL are evicted, so keys without one accumulate until the instance is full), and `allkeys-lru` is what most people assume they have. State which one, and what happens at the memory limit: failed writes, evicted sessions, or an out-of-memory restart are three very different incidents. Set `maxmemory` explicitly and alert on headroom.
+
+## HTTP caching semantics
+
+For any public or client-facing API, the cheapest cache is the one the browser and the CDN already have. Most designs ignore it.
+
+- **`Cache-Control`** on every response, deliberately: `no-store` for anything personal, `private, max-age=N` for per-user data the browser may keep, `public, max-age=N, s-maxage=M` for shared responses the CDN may keep, `immutable` for content-hashed assets.
+- **`ETag` and `If-None-Match`** turn a repeat request into a 304 with no body. Cheap to generate from a version column or a content hash, and it makes "is it still current?" a free question.
+- **`stale-while-revalidate` and `stale-if-error`** let the CDN serve a slightly old response while it refreshes, or while the origin is down — which is serve-stale for free.
+- **`Vary`** lists the request headers that change the response. Missing `Vary: Accept-Encoding` or `Vary: Authorization` serves one client's response to another; a needless `Vary: Cookie` or `Vary: User-Agent` makes the cache useless.
+- **Cache keys include the query string** by default at most CDNs; a tracking parameter with a unique value per visit defeats the cache. Normalise or strip.
+
 **In-process** (an LRU library for your language — `hashicorp/golang-lru` in Go, `lru-cache` in Node, `cachetools` in Python — or a plain map with a lock) — nanosecond reads, no network. Bound the size, or it is a memory leak. A concurrent map type such as Go's `sync.Map` is not an LRU and has no eviction.
 
 Managed vs. self-hosted: managed unless you have a specific reason and someone who wants to own failover. Cluster mode adds cross-slot operation constraints — multi-key operations must hash to the same slot, which changes key design, so decide this before writing the keys.
@@ -125,10 +140,17 @@ and whether an index or read model is the better answer.>
 memory headroom, database load at cold start.>
 ```
 
+When invoked by `design-review`, return only the BLOCKING / WARNING / CONSIDER findings plus the cache-plan table; the coordinator assembles the document.
+
 ## Calibration
 
-The most valuable finding is often **"do not cache this yet — add the index and measure again."** A cache added to a system that has not measured its slow path adds a consistency problem and hides the original one.
+Severity levels are defined once in `design-review`. The most valuable finding in this domain is often **"do not cache this yet — add the index and measure again."** A cache added to a system that has not measured its slow path adds a consistency problem and hides the original one.
 
 Second most valuable: **naming the staleness tolerance the design never stated.** Almost every caching bug traces back to nobody having written down how stale is acceptable, per field.
 
-Reserve BLOCKING for: no invalidation path on data that must be fresh, a cache the database cannot survive losing, missing scope in a key (cross-tenant or cross-user leak), and regulated data cached with no deletion path.
+Reserve BLOCKING for: no invalidation path on data that must be fresh, a cache the database cannot survive losing, missing scope in a key (cross-tenant or cross-user leak), regulated data cached with no deletion path, and an eviction policy that fails writes at the memory limit on a path that cannot tolerate it.
+
+| Not a finding | A finding |
+|---|---|
+| "Consider caching the permissions lookup." | "Permissions are read on every request (stated 2k rps) with a 40 ms query; a per-request memo removes the 3× repeat within one request, and a 30 s in-process TTL bounds revocation lag to 30 s, which the security review accepted. No distributed cache needed." |
+| "Cache invalidation should be handled carefully." | "`user:{id}` is written by the profile service on update but also by the admin bulk-import job, which does not touch the cache; imported changes stay invisible for the full 24 h TTL. Either the import job deletes the keys or the TTL drops to the stated 5-minute tolerance." |

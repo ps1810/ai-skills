@@ -1,0 +1,7 @@
+{
+  "name": "ts-review",
+  "version": "0.1.0",
+  "description": "TypeScript coding conventions and automatic review after Claude writes code",
+  "author": { "name": "CHANGE-ME", "email": "you@example.com" },
+  "keywords": ["typescript", "node", "review", "async", "solid"]
+}

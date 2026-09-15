@@ -34,6 +34,7 @@ Default to PostgreSQL unless something specific rules it out. It handles relatio
 | Elasticsearch / OpenSearch | Full-text relevance ranking, faceted search | A secondary index that can drift from the source of truth; not a system of record |
 | Redis / Valkey | Ephemeral state, counters, rate limits, queues | Memory-bound; persistence is a durability compromise |
 | Neo4j / graph | Traversal depth is the query, not a join | Narrow; a recursive CTE covers many "graph" cases |
+| pgvector / dedicated vector store | Similarity search over embeddings | pgvector keeps one operational surface and is adequate to low millions of vectors with HNSW; a dedicated store (Pinecone, Qdrant, Weaviate) is a second system with its own consistency boundary, justified by scale or filtering needs pgvector cannot meet |
 
 Two questions that settle most engine debates: **do you need a query you have not designed for yet** (points to relational) and **do you need write throughput beyond what one primary can take** (points to a partitioned store). Most systems asking for the second one have not yet measured the first.
 
@@ -54,6 +55,25 @@ Two questions that settle most engine debates: **do you need a query you have no
 **Soft deletes need a decision, not a default.** `deleted_at` means every query needs the predicate and every unique index needs to account for it. It also conflicts with GDPR erasure — a soft-deleted row is retained data. Decide per table whether you need history, and if you do, consider an explicit archive rather than a flag.
 
 **JSONB is for genuinely schemaless attributes**, not for avoiding migrations. Data that is queried and filtered belongs in columns; JSONB gives up type checking, constraints, and clear indexing. A JSONB column that every query digs into with `->>` is a schema that was not designed.
+
+## Multi-tenancy in the schema
+
+The security skill asks whether the tenant predicate can be omitted; this is where you make sure it cannot.
+
+- **State the model**: shared tables with a `tenant_id` column (the default), schema per tenant (isolation, at the cost of N× migrations and a connection-routing layer), or database per tenant (only for contractual isolation or very large tenants).
+- **`tenant_id` is the leading column of every composite index and every unique constraint.** `UNIQUE (email)` is a cross-tenant collision; `UNIQUE (tenant_id, email)` is the invariant you meant.
+- **Row-level security** (Postgres `CREATE POLICY` with `current_setting('app.tenant_id')`) makes the predicate structural: a query without it returns nothing rather than everything. It costs a `SET` per connection checkout and some planner overhead; it is worth it whenever more than one code path builds queries.
+- **Per-tenant limits** — row counts, storage, query cost — need a place to live and a job that enforces them, or one tenant's growth becomes everyone's incident.
+- **Noisy-neighbour queries**: a hot tenant on a shared table degrades everyone. Partitioning by tenant (list or hash) bounds the blast radius and makes per-tenant export and deletion a partition operation.
+
+## Retention and archival
+
+Every table that grows needs a stated answer to "what removes old rows," decided at design time. The default answer, "nothing," is how a ten-million-row table becomes a billion-row table with the same indexes and a five-minute `DELETE`.
+
+- **Time-partition anything append-heavy** (events, logs, audit, metrics) and drop partitions on schedule. `DROP PARTITION` is instant and generates no WAL; `DELETE ... WHERE created_at < ?` on the same data is a multi-hour lock-and-bloat exercise.
+- **Archive before delete** when the data has value but no query path: copy to object storage in Parquet, then drop. Name what reads the archive and how.
+- **Retention is a compliance number, not a capacity number**, for regulated data. The security skill sets the maximum; you implement it, and the implementation is a job with monitoring, not an intention.
+- **Soft-deleted rows are retained data.** If the compliance answer is "delete," `deleted_at` is not deletion.
 
 ## Indexing
 
@@ -84,6 +104,7 @@ Concrete checks:
 
 The rule that matters: **on a large table, a migration that takes a lock is an outage.**
 
+- **Every migration sets `lock_timeout` (a few seconds) and `statement_timeout`.** A DDL statement that needs an `ACCESS EXCLUSIVE` lock queues behind any long-running transaction, and every query that arrives after it queues behind the DDL. With no `lock_timeout`, a migration waiting on one slow report blocks the entire table until the report finishes. With `lock_timeout = '5s'`, it fails fast and you retry. This is the single cheapest protection in this document and the one most often missing.
 - Expand-migrate-contract for anything breaking: add the new column nullable, backfill in batches, dual-write, switch reads, then drop the old. Multiple deploys, deliberately.
 - `CREATE INDEX CONCURRENTLY` on Postgres. A plain `CREATE INDEX` blocks writes for the duration.
 - Adding a `NOT NULL` column with a default rewrote the whole table on older Postgres; on 11+ a constant default is metadata-only. Know your version.
@@ -133,16 +154,26 @@ production volume.>
 <What the design does at 10x. Which step in the ladder is next, and the signal
 that says it is time.>
 
+## Retention
+| Table | Grows with | Retention | Mechanism |
+
 ## BLOCKING / WARNING / CONSIDER
 
 ## Reversibility
 | Decision | Cost to change later |
 ```
 
+When invoked by `design-review`, return only the BLOCKING / WARNING / CONSIDER findings plus the access-patterns and reversibility tables; the coordinator assembles the document.
+
 ## Calibration
 
-Reserve BLOCKING for: unindexed queries on tables that will grow, a check-then-act race on data that matters, a migration that locks a large table, money in a float, missing constraints on an invariant the business depends on, and a schema that cannot answer a query the feature requires.
+Severity levels are defined once in `design-review`. In this domain, reserve BLOCKING for: unindexed queries on tables that will grow, a check-then-act race on data that matters, a migration that locks a large table without a `lock_timeout`, money in a float, missing constraints on an invariant the business depends on, a unique constraint that omits `tenant_id` in a multi-tenant schema, and a schema that cannot answer a query the feature requires.
 
 The highest-value finding in most database reviews is **an access pattern the schema cannot serve efficiently** — caught at design time it is a schema change on an empty table, and caught in production it is a migration with a maintenance window.
+
+| Not a finding | A finding |
+|---|---|
+| "Consider adding indexes for performance." | "`GET /orders?status=open` filters `orders` by `status` with no index; at the stated 50M rows and 200 rps that is a sequential scan per request. Add `(tenant_id, status, created_at)`." |
+| "The migration may lock the table." | "`ALTER TABLE orders ADD COLUMN ... NOT NULL DEFAULT now()` on Postgres 10 rewrites the 50M-row table under `ACCESS EXCLUSIVE`; on the stated instance that is roughly 40 minutes of writes blocked. Add nullable, backfill in 10k-row batches, then add the constraint `NOT VALID` and validate." |
 
 Include the reversibility table. It tells the reader where to argue with you and where to just ship.

@@ -1,6 +1,6 @@
 ---
 name: go-review
-description: Review Go code against idiomatic Go, SOLID design, concurrency and race safety, and appropriate design patterns. Use this whenever you write, modify, or are asked to review Go code — including when the user says "review this", "does this look right", "is this idiomatic", asks about goroutines, channels, sync, interfaces, or error handling in Go, or when a race detector or go vet finding needs interpreting. Also use it before finishing a turn that touched any .go file.
+description: Review existing Go code against idiomatic Go, SOLID design, concurrency and race safety, test quality, and appropriate design patterns. Use this when the user asks to review, audit, or critique Go code — "review this", "does this look right", "is this idiomatic", "find the race" — or when a race detector, go vet, or staticcheck finding needs interpreting. For writing new Go, use go-coding instead; the Stop hook applies this skill automatically after edits.
 ---
 
 # Go review
@@ -31,6 +31,7 @@ Load the relevant reference file rather than working from memory. Each is a chec
 | Concurrency & races | `references/concurrency.md` | The code contains `go`, `chan`, `sync`, `atomic`, `select`, or `context` cancellation |
 | SOLID in Go | `references/solid.md` | Reviewing package boundaries, interfaces, constructors, or dependency wiring |
 | Design patterns | `references/patterns.md` | Evaluating whether a pattern fits, or whether an abstraction is premature |
+| Tests | `references/testing.md` | The diff adds or changes tests, or adds code with no test |
 
 Concurrency findings outrank everything else. A race is a correctness bug that ships silently and corrupts data under load; an unidiomatic name is a readability cost. Do not report them at the same severity.
 

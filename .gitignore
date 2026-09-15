@@ -1,0 +1,7 @@
+# IDE
+.idea/
+.vscode/
+
+# Hook marker files, in case a plugin is ever enabled on this repo itself
+.claude/.go-touched
+.claude/.ts-touched

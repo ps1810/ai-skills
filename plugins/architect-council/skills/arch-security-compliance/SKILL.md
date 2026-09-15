@@ -59,12 +59,47 @@ Delegate to a proven implementation rather than designing one. Then check the pa
 
 For service-to-service: mutual TLS or short-lived workload identity, not a long-lived shared secret in an environment variable.
 
-## Secrets
+## Secrets and keys
 
 - Managed secret store with rotation, not environment variables baked into images, not config files in the repo.
 - Rotation must be possible without downtime. If rotating the database password requires a coordinated restart, it will not happen.
 - Nothing secret in logs, error messages, traces, or URLs. Query strings end up in access logs and browser history.
 - Scan for committed secrets in CI, and assume anything ever committed is compromised.
+
+"Encrypt at rest" is not a design until the keys have a home:
+
+- **Where do the keys live?** A KMS (cloud provider's, or Vault), not a column, not a config file. The application should hold a reference to a key, never the key material.
+- **Envelope encryption** for anything encrypted in the application: a per-record or per-tenant data key, itself encrypted by the KMS master key. Rotating the master key then re-wraps data keys instead of re-encrypting every row.
+- **Who can use each key?** IAM on the KMS is the real access control for encrypted data. A service with `kms:Decrypt` on every key has access to everything, regardless of database permissions.
+- **Per-tenant keys** turn tenant erasure into a key deletion, which is the only erasure that also covers backups. Worth naming as an option when regulated data and multi-tenancy meet.
+
+## File uploads
+
+An upload endpoint is an attacker writing bytes onto your infrastructure. If the feature has one, check every line:
+
+- **Validate the content, not the extension or the client-supplied `Content-Type`.** Sniff magic bytes; for images, re-encode through a library so a polyglot file does not survive.
+- **Bound the size at the edge** (load balancer or proxy), before the application reads it into memory. Stream to storage; never buffer an unbounded body.
+- **Store outside the web root, under a name you generated**, not the client's filename. Serve through a signed URL or a proxy that sets `Content-Disposition: attachment` and a safe `Content-Type`; never execute or render user content from the same origin as the application.
+- **Scan** for malware where the file is shared with other users or opened by staff. A scanner with no quarantine path is decorative.
+- **Direct-to-storage uploads** (presigned S3/GCS URLs) keep the bytes off your servers entirely and are the default for anything over a few megabytes. Constrain the presigned policy: size, content type, key prefix, expiry.
+- **Uploaded PII is regulated data**: it needs the same classification, retention, and deletion path as a database column, and object storage is one of the stores the erasure pipeline usually forgets.
+
+## Inbound webhooks
+
+A webhook endpoint is an unauthenticated POST unless you make it otherwise:
+
+- **Verify the signature** with the provider's secret over the raw body, using a constant-time compare, before parsing anything.
+- **Reject replays**: check the timestamp header against a window, and dedupe on the provider's event ID.
+- **Do the work asynchronously.** Acknowledge fast, enqueue, process. A slow handler causes the provider to retry, which causes duplicates, which is why the dedupe exists.
+- **Never trust the payload's claims about identity or amounts.** Fetch the canonical object from the provider's API by ID if the decision matters (payment succeeded, subscription changed).
+
+## Supply chain
+
+- **Lockfiles committed and honoured** (`go.sum`, `package-lock.json`/`pnpm-lock.yaml`), with `--frozen-lockfile` or the equivalent in CI. A build that resolves fresh is a build you have not tested.
+- **Dependency audit in CI** (`govulncheck`, `npm audit`/`pnpm audit`, Dependabot or Renovate) with a policy for what blocks: known-exploited critical vulnerabilities block; the rest have an owner and a deadline.
+- **Pin third-party CI actions and images by digest**, not by mutable tag. A compromised `v1` tag on a popular action has exfiltrated secrets from thousands of repos.
+- **CI secrets are the crown jewels.** Deploy credentials in a workflow that also runs on pull requests from forks is a leak. Separate the build job from the deploy job and scope secrets to the latter.
+- **SBOM** where a customer or regulator will ask; generating one is cheap once the lockfile discipline exists.
 
 ## Audit logging
 
@@ -110,10 +145,17 @@ attack or violation, not a category name.>
 <What you assumed about data sensitivity, tenancy, and existing controls.>
 ```
 
+When invoked by `design-review`, return only the BLOCKING / WARNING / CONSIDER findings plus the data-classification table; the coordinator assembles the document.
+
 ## Calibration
 
-Reserve BLOCKING for things that will cause a breach, a violation, or an expensive re-architecture: a missing authorization boundary, regulated data with no deletion path, card data entering scope by accident, cross-tenant reachability. Everything else is WARNING or CONSIDER.
+Severity levels are defined once in `design-review`. In this domain, reserve BLOCKING for things that will cause a breach, a violation, or an expensive re-architecture: a missing authorization boundary, regulated data with no deletion path, card data entering scope by accident, cross-tenant reachability, an upload endpoint that serves user content from the application origin. Everything else is WARNING or CONSIDER.
 
-Name the concrete attack. "Insufficient input validation" tells the reader nothing; "the `role` field in the signup payload is written straight to the user record, so any user can create an admin" tells them exactly what to fix. If you cannot describe the attack, you have found a category, not a finding.
+Name the concrete attack. If you cannot describe the attack, you have found a category, not a finding.
+
+| Not a finding | A finding |
+|---|---|
+| "Insufficient input validation on the signup endpoint." | "The `role` field in the signup payload is written straight to the user record, so any user can POST `role: admin` and get it." |
+| "Multi-tenancy risks should be considered." | "`GET /reports/{id}` loads by primary key with no tenant predicate; a user in tenant A who guesses an ID reads tenant B's report." |
 
 Say when a control is disproportionate. An internal tool for eight employees does not need the threat model of a payment system, and recommending one anyway trains the reader to discount the next review.

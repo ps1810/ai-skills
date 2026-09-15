@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.ts|*.tsx|*.mts|*.cts) mkdir -p \"${CLAUDE_PROJECT_DIR:-.}/.claude\" && touch \"${CLAUDE_PROJECT_DIR:-.}/.claude/.ts-touched\" ;; esac; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "You are gating the end of a coding turn in a TypeScript project. The JSON at the end of this prompt is the Stop hook input; it has `cwd`, `transcript_path`, and `stop_hook_active`.\n\n## Decide whether to review at all\n\nReturn {\"ok\": true} immediately, doing nothing else, if ANY of these hold:\n- `<cwd>/.claude/.ts-touched` does not exist (Claude did not write a TypeScript file this turn).\n- There is no `package.json` or no `tsconfig.json` in cwd or any parent directory.\n- `git status --porcelain` fails or reports no changes to .ts/.tsx/.mts/.cts files.\n\n## Review\n\nOtherwise:\n1. Detect the package manager from the lockfile (pnpm-lock.yaml → pnpm, yarn.lock → yarn, bun.lockb/bun.lock → bun, else npm). Run `<pm> exec tsc --noEmit -p <nearest tsconfig>`; if `package.json` has a `lint` script run it, else `<pm> exec eslint <changed files>` if an eslint config exists; if `package.json` has a `typecheck` script prefer it over raw tsc. Do not run the full test suite; if a `test` script exists, run it only for test files that changed (vitest/jest accept file paths).\n2. Read `${CLAUDE_PLUGIN_ROOT}/skills/ts-review/SKILL.md` for the severity scale and output format, and `${CLAUDE_PLUGIN_ROOT}/skills/ts-review/references/idiomatic.md` and `${CLAUDE_PLUGIN_ROOT}/skills/ts-review/references/async.md` for the checklists.\n3. Read each changed TypeScript file in full (`git diff --name-only` plus `git diff --cached --name-only`, plus untracked files from `git status --porcelain`), not only the hunks.\n4. Focus on: `any`, unsafe `as` and `!` assertions, unvalidated data crossing a boundary (JSON, env, request body), floating promises and missing awaits, swallowed or untyped `catch`, unbounded `Promise.all` fan-out, check-then-act across an `await`, event-loop-blocking sync calls in a server, and missing `AbortSignal`/timeout on outbound calls.\n\nClassify each finding BLOCKING, WARNING, or NIT using the skill's definitions. Only BLOCKING findings gate the turn.\n\n## Do not block twice on the same finding\n\nYou have no memory between invocations. If `stop_hook_active` is true, a previous invocation of this hook already blocked this turn. Before blocking again, grep `transcript_path` for the previous hook's `reason` text and for Claude's response to it. A BLOCKING finding that was already reported, and that Claude either fixed or explicitly chose to leave with a stated reason, is now a WARNING and must not block again. Only new BLOCKING findings block on a second pass.\n\n## Return\n\n- At least one BLOCKING finding to report: return {\"ok\": false, \"reason\": \"<numbered BLOCKING findings, each with file:line, the concrete failure mode, and the specific fix>\"}. Leave `.claude/.ts-touched` in place so the next pass reviews the fix.\n- Otherwise: run `rm -f <cwd>/.claude/.ts-touched` and return {\"ok\": true}, even if there are warnings and nits.\n\n$ARGUMENTS",
+            "timeout": 240
+          }
+        ]
+      }
+    ]
+  }
+}

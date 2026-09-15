@@ -6,17 +6,25 @@
     "email": "prakharsingh181094@gmail.com"
   },
   "metadata": {
-    "description": "Go review pipeline and architect-level design skills",
+    "description": "Go and TypeScript coding/review pipelines and architect-level design skills",
     "version": "0.1.0"
   },
   "plugins": [
     {
       "name": "go-review",
       "source": "./plugins/go-review",
-      "description": "Automatic Sonnet-backed Go code review after Claude writes code: idiomatic Go, SOLID, concurrency and race safety, design patterns.",
+      "description": "Go coding conventions while writing, and automatic Sonnet-backed review after Claude writes code: idiomatic Go, SOLID, concurrency and race safety, tests, design patterns.",
       "version": "0.1.0",
       "category": "review",
-      "tags": ["go", "golang", "code-review", "concurrency"]
+      "tags": ["go", "golang", "code-review", "concurrency", "testing"]
+    },
+    {
+      "name": "ts-review",
+      "source": "./plugins/ts-review",
+      "description": "TypeScript coding conventions while writing, and automatic Sonnet-backed review after Claude writes code: strict types, boundary validation, async correctness, SOLID, tests, design patterns.",
+      "version": "0.1.0",
+      "category": "review",
+      "tags": ["typescript", "node", "code-review", "async", "testing"]
     },
     {
       "name": "architect-council",
